@@ -10,12 +10,12 @@ MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
 RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
-# Behavior toggles (default ON for 'pull & play')
+# Defaults for a pull-&-run experience
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
 
-# -------- PUID / PGID & user --------
+# Run as an unprivileged user that matches host ownership (Unraid: 99/100)
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
@@ -37,7 +37,7 @@ fi
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# -------- appsettings.json in /config --------
+# --- appsettings.json in /config ---
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     log "Seeding appsettings.json from release"
@@ -53,7 +53,7 @@ if [[ ! -f "${APP_JSON}" ]]; then
     "DoLoginRoutine": true
   },
   "Telnet": { "Enabled": true, "IP": "0.0.0.0", "Port": 23, "Heartbeat": false },
-  "Rlogin": { "Enabled": true, "IP": "0.0.0.0", "Port": 513, "PortPerModule": false },
+  "Rlogin": { "Enabled": true, "IP": "0.0.0.0", "Port": 513, "PortPerModule": true },
   "Database": { "File": "/config/mbbsemu.db" }
 }
 JSON
@@ -61,10 +61,10 @@ JSON
   fi
 fi
 
-# Force DB path to /config/mbbsemu.db (some releases differ)
+# Force DB path to /config
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}" || true
 
-# -------- Apply MajorMUD license (env -> JSON string) --------
+# --- Apply MajorMUD license (env -> JSON string) ---
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
@@ -76,57 +76,46 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# Optional message-file activation code
+# Optional activation into message file if present
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
+    # Replace {DEMO} token only; no regex chars from the code are treated specially
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
     log "Injected MajorMUD activation code"
   fi
 fi
 
-# -------- Build modules.json if missing (auto-detect) --------
+# --- Create modules.json if missing (auto-detect WCCMMUD) ---
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
   printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
 elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
-  mm_dir="${MODULES_DIR}/WCCMMUD"
-  if [[ -d "${mm_dir}" ]]; then
-    log "Auto-enabling WCCMMUD at ${mm_dir}"
-    {
-      echo '{ "Modules": ['
-      echo '  { "Identifier": "WCCMMUD", "Path": "'"${mm_dir}"'" }'
-      echo '] }'
-    } > "${MODULES_JSON}"
+  if [[ -d "${MODULES_DIR}/WCCMMUD" ]]; then
+    log "Auto-enabling WCCMMUD"
+    printf '{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "/config/modules/WCCMMUD" } ] }\n' > "${MODULES_JSON}"
   else
-    log "No modules detected; starting with none"
-    echo '{ "Modules": [] }' > "${MODULES_JSON}"
+    printf '{ "Modules": [] }\n' > "${MODULES_JSON}"
   fi
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 
-# -------- Make module files readable & fix Linux case sensitivity --------
-if [[ -d "${MODULES_DIR}" ]]; then
-  if [[ "${MODULES_RELAX_PERMS}" == "true" ]]; then
-    log "Relaxing permissions under ${MODULES_DIR}"
-    chmod -R u+rwX,go+rX "${MODULES_DIR}" || true
-  fi
-  if [[ "${MODULES_FIX_CASE}" == "true" ]]; then
-    # iterate each module directory, create lowercase symlinks for UPPERCASE files
-    for d in "${MODULES_DIR}"/*/ ; do
-      [[ -d "$d" ]] || continue
-      for f in "$d"* ; do
-        [[ -e "$f" ]] || continue
-        base="$(basename "$f")"
-        lower="${base,,}"                # bash lowercase
-        if [[ "$base" != "$lower" && ! -e "$d$lower" ]]; then
-          ln -s "$base" "$d$lower" 2>/dev/null || true
-        fi
-      done
-    done
-  fi
+# --- Make module content readable regardless of weird perms ---
+if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
+  log "Normalizing permissions under ${MODULES_DIR}"
+  # Directories 755, files 644 (works even if some dirs start as --x)
+  find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+  find "${MODULES_DIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
 fi
 
-# -------- First-run DB init directly in /config (as unprivileged) --------
+# --- Robust case-fix for the two DOS executables (no globbing needed) ---
+if [[ "${MODULES_FIX_CASE}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
+  d="${MODULES_DIR}/WCCMMUD"
+  # Create lowercase shims only if uppercase exists and lowercase is missing
+  [[ -f "${d}/WCCMMUD.EXE"  && ! -e "${d}/wccmmud.EXE"  ]] && ln -sf "WCCMMUD.EXE"  "${d}/wccmmud.EXE"  || true
+  [[ -f "${d}/WCCMMUTL.EXE" && ! -e "${d}/wccmmutl.EXE" ]] && ln -sf "WCCMMUTL.EXE" "${d}/wccmmutl.EXE" || true
+fi
+
+# --- First-run DB init (if SYSOP_PASSWORD provided and DB missing) ---
 if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   log "Initializing database with provided SYSOP_PASSWORD"
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -136,7 +125,7 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
 fi
 
-# -------- Launch from /config --------
+# --- Launch ---
 cd "${CONFIG_ROOT}"
 log "Starting MBBSEmu (Telnet 0.0.0.0:23, Rlogin 0.0.0.0:513)"
 if [[ "$(id -u)" -eq 0 ]]; then
