@@ -53,7 +53,7 @@ JSON
   fi
 fi
 
-# force DB path to /config/mbbsemu.db if a release shipped a different value
+# force DB path to /config/mbbsemu.db
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}"
 
 # -------- modules.json (default, or inline override) --------
@@ -66,9 +66,8 @@ EOF
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" || true
 
-# -------- MajorMUD licensing (write BTURNO as *string*, pad to 8) --------
+# -------- MajorMUD licensing (BTURNO as *string*, pad to 8) --------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
-  # normalize to digits, then left-pad to 8 with zeros
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
   if grep -q '"GSBL.BTURNO"' "${APP_JSON}"; then

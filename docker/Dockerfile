@@ -6,13 +6,15 @@ ENV MBBSEMU_HOME=/app \
     CONFIG_ROOT=/config \
     DOTNET_BUNDLE_EXTRACT_BASE_DIR=/config/.net \
     HOME=/config \
+    TERM=xterm \
     PATH="/app:${PATH}"
 
-# keep base patched; install tooling (ICU provided by runtime-deps base)
+# keep base patched; install tooling and runtime libs (ICU from base, ncurses here)
 RUN apt-get update \
  && apt-get -y upgrade \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl unzip bash libcap2-bin gosu jq \
+      libncursesw6 \
  && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -28,7 +30,7 @@ RUN chmod +x /entrypoint.sh /app/download-release.sh
 # (optional) pin to a specific release with MBBSEMU_VERSION
 ARG MBBSEMU_VERSION=latest
 
-# Fetch latest stable release at build time, using a BuildKit secret (no token in layers)
+# Fetch latest stable release at build time using a BuildKit secret (no token in layers)
 RUN --mount=type=secret,id=GH_TOKEN \
     bash -lc 'export GH_TOKEN="$(cat /run/secrets/GH_TOKEN 2>/dev/null || true)"; bash /app/download-release.sh'
 
