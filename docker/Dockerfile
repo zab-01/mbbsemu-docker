@@ -9,9 +9,9 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
 
 # Tools needed to fetch & unpack release, and to grant low-port bind cap
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl tar libcap2-bin \
+      ca-certificates curl tar libcap2-bin bash \
     && rm -rf /var/lib/apt/lists/*
-
+    
 # Non-root user
 RUN useradd -r -u 10001 -g users mbbs
 WORKDIR /app
