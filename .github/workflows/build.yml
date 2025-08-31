@@ -46,18 +46,7 @@ jobs:
           file: docker/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-                - name: Build & Push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          no-cache: true          # add for this run; remove later
-          build-args: |
-            MBBSEMU_VERSION=latest
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          no-cache: true   #remove later
           build-args: |
             DOTNET_VERSION=8.0
             MBBSEMU_REF=master
