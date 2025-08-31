@@ -1,43 +1,60 @@
 # docker/Dockerfile
-FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim
+# ---------- builder ----------
+ARG DOTNET_VERSION=8.0
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS builder
+SHELL ["/bin/bash", "-lc"]
+WORKDIR /src
 
+# build args (customize the ref/tag you want to build)
+ARG MBBSEMU_REF=master
+
+# tools
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# fetch source
+RUN git clone --depth=1 --branch "${MBBSEMU_REF}" https://github.com/mbbsemu/MBBSEmu.git .
+
+# quick sanity: show what we cloned (helps debug if the repo layout changes)
+RUN echo "DEBUG: ls -al /src" && ls -al /src
+
+# restore + publish (handle either root csproj or subfolder csproj)
+RUN if [ -f "MBBSEmu.csproj" ]; then \
+      echo "Publishing root csproj"; \
+      dotnet restore MBBSEmu.csproj && \
+      dotnet publish MBBSEmu.csproj -c Release -o /out -p:PublishSingleFile=true -p:PublishTrimmed=false; \
+    elif [ -f "MBBSEmu/MBBSEmu.csproj" ]; then \
+      echo "Publishing subfolder csproj"; \
+      dotnet restore MBBSEmu/MBBSEmu.csproj && \
+      dotnet publish MBBSEmu/MBBSEmu.csproj -c Release -o /out -p:PublishSingleFile=true -p:PublishTrimmed=false; \
+    else \
+      echo "Could not find MBBSEmu.csproj; repo layout unexpected" && ls -R && exit 1; \
+    fi
+
+# ---------- runtime ----------
+FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim
+SHELL ["/bin/bash", "-lc"]
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
     MBBSEMU_HOME=/app \
     MOUNT_ROOT=/mbbsemu \
     PATH="/app:${PATH}"
 
-# Ensure bash exists, plus curl/tar and setcap
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl tar libcap2-bin bash \
-    && rm -rf /var/lib/apt/lists/*
+# small deps and capability for low ports
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libcap2-bin && rm -rf /var/lib/apt/lists/*
 
-# Use bash for all subsequent RUN steps (avoids /bin/sh invoking)
-SHELL ["/bin/bash", "-lc"]
-
-# Non-root user
+# non-root user
 RUN useradd -r -u 10001 -g users mbbs
 WORKDIR /app
 
-# Copy scripts from build context
+# copy built binary
+COPY --from=builder /out/ /app/
+
+# entry + volumes
 COPY docker/entrypoint.sh /entrypoint.sh
-COPY docker/download-release.sh /app/download-release.sh
-
-# Quick debug to prove the files & bash exist (remove later)
-RUN echo "DEBUG: which bash -> $(which bash)" \
- && echo "DEBUG: /app contents:" && ls -al /app \
- && echo "DEBUG: head of download-release.sh:" && head -n 5 /app/download-release.sh \
- && bash -n /app/download-release.sh
-
-# Fetch official release at build time
-ARG MBBSEMU_VERSION=latest
-RUN bash /app/download-release.sh
-
-# Single bind mount for all state
+RUN chmod +x /entrypoint.sh
 VOLUME ["/mbbsemu"]
 
+# ports + capability
 EXPOSE 23/tcp 513/tcp
-
-# Allow low ports without running the container as root
 RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
 
 USER mbbs
