@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM debian:bookworm-slim
 
 ENV MBBSEMU_HOME=/app \
@@ -19,13 +21,13 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/download-release.sh /app/download-release.sh
 RUN chmod +x /entrypoint.sh /app/download-release.sh
 
-# Build args (optionally passed from GH Actions)
+# Build arg for pinning a specific release if desired (non-secret)
 ARG MBBSEMU_VERSION=latest
-ARG GH_TOKEN
-ENV GH_TOKEN="${GH_TOKEN}"
 
-# Fetch the release asset at build time (no runtime unzipping)
-RUN bash /app/download-release.sh
+# Fetch the release asset at build time.
+# We *optionally* read GH_TOKEN from a BuildKit secret to avoid rate limits.
+RUN --mount=type=secret,id=GH_TOKEN \
+    bash -lc 'export GH_TOKEN="$(cat /run/secrets/GH_TOKEN 2>/dev/null || true)"; bash /app/download-release.sh'
 
 VOLUME ["/config"]
 EXPOSE 23 513
