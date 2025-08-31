@@ -1,28 +1,28 @@
-FROM debian:bookworm-slim
+#!/usr/bin/env bash
+set -euo pipefail
 
-ENV MBBSEMU_HOME=/app \
-    CONFIG_ROOT=/config \
-    PATH="/app:${PATH}"
+: "${MBBSEMU_VERSION:=latest}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip bash libcap2-bin \
-    && rm -rf /var/lib/apt/lists/*
+if [[ "$MBBSEMU_VERSION" == "latest" ]]; then
+  API_URL="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/latest"
+else
+  API_URL="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/tags/${MBBSEMU_VERSION}"
+fi
 
-SHELL ["/bin/bash", "-lc"]
+JSON=$(curl -fsSL "$API_URL")
 
-WORKDIR /app
+ASSET_URL=$(echo "$JSON" \
+  | grep -Eo '"browser_download_url":\s*"[^"]+"' \
+  | cut -d'"' -f4 \
+  | grep -i 'linux-x64.*\.zip$' \
+  | head -n1)
 
-COPY docker/entrypoint.sh /entrypoint.sh
-COPY docker/download-release.sh /app/download-release.sh
-RUN chmod +x /entrypoint.sh /app/download-release.sh
+if [[ -z "$ASSET_URL" ]]; then
+  echo "No linux-x64 asset found" >&2; exit 1
+fi
 
-# Pull latest release (Linux x64 by default)
-ARG MBBSEMU_VERSION=latest
-RUN bash /app/download-release.sh
-
-VOLUME ["/config"]
-EXPOSE 23/tcp 513/tcp
-RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
-
-USER nobody
-ENTRYPOINT ["/entrypoint.sh"]
+echo "Fetching $ASSET_URL"
+curl -fsSL "$ASSET_URL" -o /tmp/mbbsemu.zip
+unzip -q /tmp/mbbsemu.zip -d /app
+chmod +x /app/MBBSEmu
+rm /tmp/mbbsemu.zip
