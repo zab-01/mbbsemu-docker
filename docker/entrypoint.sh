@@ -30,6 +30,8 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
+# ensure the directory itself is traversable/readable
+chmod u+rwx,go+rx "${CONFIG_ROOT}" 2>/dev/null || true
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
@@ -68,7 +70,6 @@ sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g'
 # --- ensure Account.DefaultKeys includes "MMUD" -------------------------------
 ensure_mmud_key() {
   if command -v jq >/dev/null 2>&1; then
-    # Create Account/DefaultKeys if missing, append "MMUD" if not present
     tmp="$(mktemp)"
     jq '
       (.Account //= {}) |
@@ -76,11 +77,9 @@ ensure_mmud_key() {
       (.Account.DefaultKeys |= (if index("MMUD")==null then . + ["MMUD"] else . end))
     ' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
-    # Minimal sed fallback: if no Account block, inject one with MMUD
     if ! grep -q '"Account"' "${APP_JSON}"; then
       sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING","MMUD"] },/' "${APP_JSON}" || true
     else
-      # Try to append "MMUD" if not already present
       grep -q '"MMUD"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"MMUD"]/' "${APP_JSON}" || true
     fi
   fi
@@ -122,7 +121,12 @@ elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 
-# --- perms and lowercase shims ------------------------------------------------
+# --- normalize perms on top-level config files --------------------------------
+for f in "${APP_JSON}" "${MODULES_JSON}" "${CONFIG_ROOT}/mbbsemu.db"; do
+  [ -e "$f" ] && chmod u+rw,go+r "$f" 2>/dev/null || true
+done
+
+# --- perms and lowercase shims for modules -----------------------------------
 if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
   log "Normalizing permissions under ${MODULES_DIR}"
   find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
@@ -138,11 +142,15 @@ fi
 # --- first-run DB init with SYSOP_PASSWORD -----------------------------------
 if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   log "Initializing database with provided SYSOP_PASSWORD"
+  # ensure readable appsettings before DBRESET attempt
+  chmod u+rw,go+r "${APP_JSON}" 2>/dev/null || true
   if [[ "$(id -u)" -eq 0 ]]; then
     gosu "${PUID}:${PGID}" bash -lc "(cd '${CONFIG_ROOT}' && /app/MBBSEmu -DBRESET '${SYSOP_PASSWORD}')"
   else
     (cd "${CONFIG_ROOT}" && /app/MBBSEmu -DBRESET "${SYSOP_PASSWORD}")
   fi
+  # the DB was created—make sure current user can write it later too
+  [ -f "${CONFIG_ROOT}/mbbsemu.db" ] && chmod u+rw,go+r "${CONFIG_ROOT}/mbbsemu.db" 2>/dev/null || true
 fi
 
 # --- start -------------------------------------------------------------------
