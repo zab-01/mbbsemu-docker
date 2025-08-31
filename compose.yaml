@@ -6,9 +6,13 @@ services:
       - "2323:23"
       - "1513:513"
     environment:
+      TZ: America/Chicago
+      PUID: "1000"
+      PGID: "1000"
+      SYSOP_PASSWORD: "testpass"
+      # Licensing (optional)
       MUD_REG_NUMBER: "12345678"
       MUD_ACTIVATION_CODE: "dlhbdfhjlnp"
-      SYSOP_PASSWORD: "MySecretPwd"
-      TZ: "America/Chicago"
     volumes:
       - ./config:/config
+    restart: unless-stopped

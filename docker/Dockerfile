@@ -2,9 +2,11 @@ FROM debian:bookworm-slim
 
 ENV MBBSEMU_HOME=/app \
     CONFIG_ROOT=/config \
+    DOTNET_BUNDLE_EXTRACT_BASE_DIR=/config/.net \
+    HOME=/config \
     PATH="/app:${PATH}"
 
-# Security: apply patches on build, install deps + gosu for privilege drop
+# keep base patched; install deps + gosu for privilege drop
 RUN apt-get update \
  && apt-get -y upgrade \
  && apt-get install -y --no-install-recommends \
@@ -14,20 +16,24 @@ RUN apt-get update \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /app
 
+# scripts
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/download-release.sh /app/download-release.sh
 RUN chmod +x /entrypoint.sh /app/download-release.sh
 
-# Pull latest release (build time only)
+# fetch latest stable release at build-time (never at runtime)
 ARG MBBSEMU_VERSION=latest
 RUN bash /app/download-release.sh
 
+# all mutable state lives here
 VOLUME ["/config"]
+
+# telnet / rlogin
 EXPOSE 23 513
 
-# Allow binding low ports (23, 513) without root
+# allow binding low ports as non-root
 RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
 
-# Run as root just long enough to chown + drop to PUID/PGID via entrypoint
+# run as root only long enough for entrypoint to chown + gosu drop to PUID/PGID
 USER root
 ENTRYPOINT ["/entrypoint.sh"]

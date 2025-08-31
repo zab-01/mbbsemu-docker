@@ -6,37 +6,37 @@ APP_JSON_SRC="/app/appsettings.json"
 APP_JSON="${CONFIG_ROOT}/appsettings.json"
 MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
+RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
-# -------- PUID / PGID handling (root -> drop privileges) --------
+# -------- PUID / PGID handling (drop privileges) --------
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
-# create/update group/user ids to match requested PUID/PGID
 if [[ "$(id -u)" -eq 0 ]]; then
-  # create or modify group
+  # group
   if ! getent group "${PGID}" >/dev/null 2>&1; then
     groupadd -g "${PGID}" mbbs 2>/dev/null || true
   fi
-  # ensure 'mbbs' exists with the requested uid/gid
+  # user with requested uid/gid; set home to /config
   if id -u mbbs >/dev/null 2>&1; then
-    usermod -o -u "${PUID}" -g "${PGID}" mbbs || true
+    usermod -o -u "${PUID}" -g "${PGID}" -d "${CONFIG_ROOT}" mbbs || true
   else
-    useradd -o -u "${PUID}" -g "${PGID}" -M -d /nonexistent -s /usr/sbin/nologin mbbs || true
+    useradd -o -u "${PUID}" -g "${PGID}" -M -d "${CONFIG_ROOT}" -s /usr/sbin/nologin mbbs || true
   fi
 fi
 
-mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs"
-# Make sure the mount is owned by the runtime user
-if [[ "$(id -u)" -eq 0 ]]; then
-  chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
-fi
+mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
+chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 
-# -------- Create appsettings.json in /config (no interactivity) --------
+# ensure .NET bundle cache points at a writable dir
+export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
+export HOME="${CONFIG_ROOT}"
+
+# -------- Create appsettings.json in /config (never write to /app) --------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     install -o "${PUID}" -g "${PGID}" -m 0644 "${APP_JSON_SRC}" "${APP_JSON}"
   else
-    # Fallback default
     cat > "${APP_JSON}" <<'JSON'
 {
   "Application": {
@@ -54,10 +54,10 @@ JSON
   fi
 fi
 
-# Force DB path to /config/mbbsemu.db
+# force DB path to /config/mbbsemu.db if release shipped a different value
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}"
 
-# -------- Modules config --------
+# -------- modules.json (default) --------
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
   printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
 elif [[ ! -f "${MODULES_JSON}" ]]; then
@@ -79,13 +79,9 @@ fi
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
+    # replace only the placeholder token if present
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
   fi
-fi
-
-# Ensure everything in /config is owned by the runtime user
-if [[ "$(id -u)" -eq 0 ]]; then
-  chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
 # -------- First-run DB init directly in /config (as unprivileged) --------

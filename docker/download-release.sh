@@ -4,35 +4,44 @@ set -euo pipefail
 : "${MBBSEMU_VERSION:=latest}"
 : "${MBBSEMU_HOME:=/app}"
 
+# map architecture -> asset pattern
+arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+case "$arch" in
+  amd64|x86_64) asset_re='linux.*(x64|amd64).*\.(zip|tar\.gz)$' ;;
+  arm64|aarch64) asset_re='linux.*(arm64|aarch64).*\.(zip|tar\.gz)$' ;;
+  *) asset_re='linux.*\.(zip|tar\.gz)$' ;;
+esac
+
 if [[ "$MBBSEMU_VERSION" == "latest" ]]; then
-  API_URL="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/latest"
+  api_url="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/latest"
 else
-  API_URL="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/tags/${MBBSEMU_VERSION}"
+  api_url="https://api.github.com/repos/mbbsemu/MBBSEmu/releases/tags/${MBBSEMU_VERSION}"
 fi
 
-JSON="$(curl -fsSL "$API_URL")"
-ASSET_URL="$(printf "%s" "$JSON" \
+json="$(curl -fsSL "$api_url")"
+
+asset_url="$(printf "%s" "$json" \
   | grep -Eo '"browser_download_url":\s*"[^"]+"' \
   | cut -d'"' -f4 \
-  | grep -Ei 'linux.*x64.*\.(zip|tar\.gz)$' \
+  | grep -E "${asset_re}" \
   | head -n1 || true)"
 
-if [[ -z "${ASSET_URL:-}" ]]; then
-  echo "ERROR: No linux x64 asset found for ${MBBSEMU_VERSION}" >&2
+if [[ -z "${asset_url:-}" ]]; then
+  echo "ERROR: No asset matching ${asset_re} for ${MBBSEMU_VERSION}" >&2
   exit 1
 fi
 
-TMP=/tmp/mbbsemu_asset
-rm -f "$TMP" "$TMP".*
+tmp=/tmp/mbbsemu_asset
+rm -f "$tmp" "$tmp".*
 
-curl -fsSL "$ASSET_URL" -o "$TMP"
+curl -fsSL "$asset_url" -o "$tmp"
 
 # extract into /app and NEVER prompt (idempotent)
-if [[ "$ASSET_URL" =~ \.zip$ ]]; then
-  unzip -oqq "$TMP" -d "$MBBSEMU_HOME"
+if [[ "$asset_url" =~ \.zip$ ]]; then
+  unzip -oqq "$tmp" -d "$MBBSEMU_HOME"
 else
-  tar -xzf "$TMP" -C "$MBBSEMU_HOME" --overwrite
+  tar -xzf "$tmp" -C "$MBBSEMU_HOME" --overwrite
 fi
 
 chmod +x "$MBBSEMU_HOME/MBBSEmu" || true
-rm -f "$TMP"
+rm -f "$tmp"
