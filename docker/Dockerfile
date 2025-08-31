@@ -4,7 +4,7 @@ WORKDIR /src
 ARG MBBSEMU_REF=master
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth=1 --branch ${MBBSEMU_REF} https://github.com/mbbsemu/MBBSEmu.git .
-RUN dotnet publish MBBSEmu/MBBSEmu.csproj -c Release -o /out \
+RUN dotnet publish MBBSEmu.csproj -c Release -o /out \
     -p:PublishSingleFile=true -p:PublishTrimmed=false
 
 FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim
