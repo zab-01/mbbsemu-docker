@@ -10,12 +10,12 @@ MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
 RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
-# Behavior toggles (all default ON for "pull & play")
-MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"   # build modules.json if missing
-MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"       # create lowercase symlinks
-MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}" # chmod -R u+rwX,go+rX on /config/modules
+# Behavior toggles (default ON for 'pull & play')
+MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
+MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
+MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
 
-# -------- PUID / PGID handling (drop privileges) --------
+# -------- PUID / PGID & user --------
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
@@ -37,7 +37,7 @@ fi
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# -------- Ensure appsettings.json exists in /config --------
+# -------- appsettings.json in /config --------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     log "Seeding appsettings.json from release"
@@ -62,9 +62,9 @@ JSON
 fi
 
 # Force DB path to /config/mbbsemu.db (some releases differ)
-sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}"
+sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}" || true
 
-# -------- Apply MajorMUD license (MUD_REG_NUMBER -> GSBL.BTURNO string) --------
+# -------- Apply MajorMUD license (env -> JSON string) --------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
@@ -76,7 +76,7 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# Optional: activation code into message file if present
+# Optional message-file activation code
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
@@ -92,10 +92,55 @@ elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
   mm_dir="${MODULES_DIR}/WCCMMUD"
   if [[ -d "${mm_dir}" ]]; then
     log "Auto-enabling WCCMMUD at ${mm_dir}"
-    cat > "${MODULES_JSON}" <<EOF
-{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "${mm_dir}" } ] }
-EOF
+    {
+      echo '{ "Modules": ['
+      echo '  { "Identifier": "WCCMMUD", "Path": "'"${mm_dir}"'" }'
+      echo '] }'
+    } > "${MODULES_JSON}"
   else
     log "No modules detected; starting with none"
     echo '{ "Modules": [] }' > "${MODULES_JSON}"
   fi
+fi
+chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
+
+# -------- Make module files readable & fix Linux case sensitivity --------
+if [[ -d "${MODULES_DIR}" ]]; then
+  if [[ "${MODULES_RELAX_PERMS}" == "true" ]]; then
+    log "Relaxing permissions under ${MODULES_DIR}"
+    chmod -R u+rwX,go+rX "${MODULES_DIR}" || true
+  fi
+  if [[ "${MODULES_FIX_CASE}" == "true" ]]; then
+    # iterate each module directory, create lowercase symlinks for UPPERCASE files
+    for d in "${MODULES_DIR}"/*/ ; do
+      [[ -d "$d" ]] || continue
+      for f in "$d"* ; do
+        [[ -e "$f" ]] || continue
+        base="$(basename "$f")"
+        lower="${base,,}"                # bash lowercase
+        if [[ "$base" != "$lower" && ! -e "$d$lower" ]]; then
+          ln -s "$base" "$d$lower" 2>/dev/null || true
+        fi
+      done
+    done
+  fi
+fi
+
+# -------- First-run DB init directly in /config (as unprivileged) --------
+if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
+  log "Initializing database with provided SYSOP_PASSWORD"
+  if [[ "$(id -u)" -eq 0 ]]; then
+    gosu "${PUID}:${PGID}" bash -lc "(cd '${CONFIG_ROOT}' && /app/MBBSEmu -DBRESET '${SYSOP_PASSWORD}')"
+  else
+    (cd "${CONFIG_ROOT}" && /app/MBBSEmu -DBRESET "${SYSOP_PASSWORD}")
+  fi
+fi
+
+# -------- Launch from /config --------
+cd "${CONFIG_ROOT}"
+log "Starting MBBSEmu (Telnet 0.0.0.0:23, Rlogin 0.0.0.0:513)"
+if [[ "$(id -u)" -eq 0 ]]; then
+  exec gosu "${PUID}:${PGID}" /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
+else
+  exec /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
+fi
