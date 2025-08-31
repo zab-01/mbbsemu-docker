@@ -1,38 +1,43 @@
 # docker/Dockerfile
 FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim
 
-# ---- Basics ----
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 \
     MBBSEMU_HOME=/app \
     MOUNT_ROOT=/mbbsemu \
     PATH="/app:${PATH}"
 
-# Tools needed to fetch & unpack release, and to grant low-port bind cap
+# Ensure bash exists, plus curl/tar and setcap
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl tar libcap2-bin bash \
     && rm -rf /var/lib/apt/lists/*
-    
+
+# Use bash for all subsequent RUN steps (avoids /bin/sh invoking)
+SHELL ["/bin/bash", "-lc"]
+
 # Non-root user
 RUN useradd -r -u 10001 -g users mbbs
 WORKDIR /app
 
-# Copy scripts
+# Copy scripts from build context
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/download-release.sh /app/download-release.sh
-RUN chmod +x /entrypoint.sh /app/download-release.sh
 
-# ---- Fetch official release at build time ----
-# You can pin a tag like v0.5.0 later; 'latest' is fine to start.
+# Quick debug to prove the files & bash exist (remove later)
+RUN echo "DEBUG: which bash -> $(which bash)" \
+ && echo "DEBUG: /app contents:" && ls -al /app \
+ && echo "DEBUG: head of download-release.sh:" && head -n 5 /app/download-release.sh \
+ && bash -n /app/download-release.sh
+
+# Fetch official release at build time
 ARG MBBSEMU_VERSION=latest
 RUN bash /app/download-release.sh
 
-# One bind mount path for ALL state: config, modules, db, logs
+# Single bind mount for all state
 VOLUME ["/mbbsemu"]
 
-# Expose defaults
 EXPOSE 23/tcp 513/tcp
 
-# Allow binding to <1024 without running as root
+# Allow low ports without running the container as root
 RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
 
 USER mbbs
