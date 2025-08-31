@@ -24,7 +24,7 @@ RUN chmod +x /entrypoint.sh /app/download-release.sh
 # ---- Fetch official release at build time ----
 # You can pin a tag like v0.5.0 later; 'latest' is fine to start.
 ARG MBBSEMU_VERSION=latest
-RUN /app/download-release.sh
+RUN bash /app/download-release.sh
 
 # One bind mount path for ALL state: config, modules, db, logs
 VOLUME ["/mbbsemu"]
