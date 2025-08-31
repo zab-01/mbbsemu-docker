@@ -99,14 +99,20 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# Optional MajorMUD activation into WCCMMUD.MSG
+# --- safer activation patch ---
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
-    sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
-    log "Injected MajorMUD activation code"
+    # Replace ONLY the ACTIVATE line, preserving the rest of the MSG file
+    sed -E -i 's/^ACTIVATE \{[^}]*\}/ACTIVATE {'"${MUD_ACTIVATION_CODE}"'}/' "${MSG}" || true
+    log "Injected MajorMUD activation code (ACTIVATE line)"
   fi
+else
+  # Ensure demo line is correct if no activation provided
+  MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
+  [[ -f "${MSG}" ]] && sed -E -i 's/^ACTIVATE \{[^}]*\}/ACTIVATE {DEMO}/' "${MSG}" || true
 fi
+
 
 # --- modules.json (auto-enable WCCMMUD) --------------------------------------
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
@@ -161,3 +167,4 @@ if [[ "$(id -u)" -eq 0 ]]; then
 else
   exec /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
 fi
+
