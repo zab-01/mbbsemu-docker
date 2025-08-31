@@ -18,7 +18,7 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/download-release.sh /app/download-release.sh
 RUN chmod +x /entrypoint.sh /app/download-release.sh
 
-# Pull latest release
+# Pull latest release (build time only)
 ARG MBBSEMU_VERSION=latest
 RUN bash /app/download-release.sh
 
