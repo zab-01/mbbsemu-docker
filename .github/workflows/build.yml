@@ -45,8 +45,8 @@ jobs:
           context: .
           file: docker/Dockerfile
           push: true
-          platforms: linux/amd64,linux/arm64
-          no-cache: true   #remove later
+          platforms: linux/amd64    # <— temporarily
+          no-cache: true            # <— just for this run
           build-args: |
             DOTNET_VERSION=8.0
             MBBSEMU_REF=master
