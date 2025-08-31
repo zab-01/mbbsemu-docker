@@ -13,11 +13,9 @@ PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  # ensure group exists
   if ! getent group "${PGID}" >/dev/null 2>&1; then
     groupadd -g "${PGID}" mbbs 2>/dev/null || true
   fi
-  # ensure user exists; set home to /config
   if id -u mbbs >/dev/null 2>&1; then
     usermod -o -u "${PUID}" -g "${PGID}" -d "${CONFIG_ROOT}" mbbs || true
   else
@@ -26,21 +24,19 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
-# own everything in /config for the runtime user
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
-# Ensure .NET single-file bundle extracts to a writable cache under /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# -------- Create appsettings.json in /config (never write to /app) --------
+# -------- appsettings.json in /config --------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     install -o "${PUID}" -g "${PGID}" -m 0644 "${APP_JSON_SRC}" "${APP_JSON}"
   else
-    cat > "${APP_JSON}" <<'JSON'
+cat > "${APP_JSON}" <<'JSON'
 {
   "Application": {
     "BBSName": "MBBSEmu BBS",
@@ -70,19 +66,21 @@ EOF
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" || true
 
-# -------- MajorMUD licensing (optional) --------
+# -------- MajorMUD licensing (write BTURNO as *string*, pad to 8) --------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
+  # normalize to digits, then left-pad to 8 with zeros
+  REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
+  REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
   if grep -q '"GSBL.BTURNO"' "${APP_JSON}"; then
-    sed -E -i 's/"GSBL\.BTURNO":[^0-9]*[0-9]*/"GSBL.BTURNO": '"${MUD_REG_NUMBER}"'/' "${APP_JSON}" || true
+    sed -E -i 's/"GSBL\.BTURNO":[^,}]+/"GSBL.BTURNO": "'"${REG_PAD}"'"/' "${APP_JSON}" || true
   else
-    sed -E -i 's/("Application":[[:space:]]*\{)/\1\n    "GSBL.BTURNO": '"${MUD_REG_NUMBER}"',/' "${APP_JSON}" || true
+    sed -E -i 's/("Application":[[:space:]]*\{)/\1\n    "GSBL.BTURNO": "'"${REG_PAD}"'",/' "${APP_JSON}" || true
   fi
 fi
 
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
-    # replace placeholder token only if present
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
   fi
 fi
@@ -96,7 +94,7 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
 fi
 
-# -------- Launch as the unprivileged user, from /config --------
+# -------- Launch from /config so any new files go to the volume --------
 cd "${CONFIG_ROOT}"
 if [[ "$(id -u)" -eq 0 ]]; then
   exec gosu "${PUID}:${PGID}" /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
