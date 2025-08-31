@@ -4,7 +4,7 @@ set -euo pipefail
 : "${MBBSEMU_VERSION:=latest}"
 : "${MBBSEMU_HOME:=/app}"
 
-# If GH_TOKEN not set, try secret file
+# If GH_TOKEN not set, try secret file (BuildKit)
 if [[ -z "${GH_TOKEN:-}" && -f /run/secrets/GH_TOKEN ]]; then
   GH_TOKEN="$(cat /run/secrets/GH_TOKEN || true)"
 fi
@@ -54,9 +54,9 @@ curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$ASSET_URL" || { echo "ERROR: do
 
 echo "==> Extracting into ${MBBSEMU_HOME}"
 case "$ASSET_URL" in
-  *.zip)         unzip -oqq "$tmp" -d "$MBBSEMU_HOME" ;;
+  *.zip)          unzip -oqq "$tmp" -d "$MBBSEMU_HOME" ;;
   *.tar.gz|*.tgz) tar -xzf "$tmp" -C "$MBBSEMU_HOME" --overwrite ;;
-  *.tar.xz)      tar -xJf "$tmp" -C "$MBBSEMU_HOME" --overwrite ;;
+  *.tar.xz)       tar -xJf "$tmp" -C "$MBBSEMU_HOME" --overwrite ;;
   *) echo "ERROR: unknown archive type: $ASSET_URL"; exit 1 ;;
 esac
 

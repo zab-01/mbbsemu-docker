@@ -8,7 +8,7 @@ ENV MBBSEMU_HOME=/app \
     HOME=/config \
     PATH="/app:${PATH}"
 
-# keep base patched; install tooling (ICU comes via runtime-deps base)
+# keep base patched; install tooling (ICU provided by runtime-deps base)
 RUN apt-get update \
  && apt-get -y upgrade \
  && apt-get install -y --no-install-recommends \
@@ -16,6 +16,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# ----- build-time area -----
 WORKDIR /app
 
 # scripts
@@ -23,10 +25,10 @@ COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/download-release.sh /app/download-release.sh
 RUN chmod +x /entrypoint.sh /app/download-release.sh
 
-# (optional) pin to a specific release with MBBSEMU_VERSION build-arg
+# (optional) pin to a specific release with MBBSEMU_VERSION
 ARG MBBSEMU_VERSION=latest
 
-# BuildKit secret for GitHub API (prevents rate limits); never lands in layers
+# Fetch latest stable release at build time, using a BuildKit secret (no token in layers)
 RUN --mount=type=secret,id=GH_TOKEN \
     bash -lc 'export GH_TOKEN="$(cat /run/secrets/GH_TOKEN 2>/dev/null || true)"; bash /app/download-release.sh'
 
@@ -38,6 +40,10 @@ EXPOSE 23 513
 
 # allow binding low ports as non-root
 RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
+
+# ----- runtime area -----
+# start in /config so any generated files (e.g., BBSGEN.DB) go to the bind mount
+WORKDIR /config
 
 # entrypoint will drop to PUID/PGID via gosu
 USER root

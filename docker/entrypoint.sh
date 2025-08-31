@@ -13,11 +13,11 @@ PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  # group
+  # ensure group exists
   if ! getent group "${PGID}" >/dev/null 2>&1; then
     groupadd -g "${PGID}" mbbs 2>/dev/null || true
   fi
-  # user with requested uid/gid; set home to /config
+  # ensure user exists; set home to /config
   if id -u mbbs >/dev/null 2>&1; then
     usermod -o -u "${PUID}" -g "${PGID}" -d "${CONFIG_ROOT}" mbbs || true
   else
@@ -26,9 +26,12 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
-chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
+# own everything in /config for the runtime user
+if [[ "$(id -u)" -eq 0 ]]; then
+  chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
+fi
 
-# ensure .NET bundle cache points at a writable dir
+# Ensure .NET single-file bundle extracts to a writable cache under /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
@@ -54,10 +57,10 @@ JSON
   fi
 fi
 
-# force DB path to /config/mbbsemu.db if release shipped a different value
+# force DB path to /config/mbbsemu.db if a release shipped a different value
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}"
 
-# -------- modules.json (default) --------
+# -------- modules.json (default, or inline override) --------
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
   printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
 elif [[ ! -f "${MODULES_JSON}" ]]; then
@@ -79,7 +82,7 @@ fi
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
-    # replace only the placeholder token if present
+    # replace placeholder token only if present
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
   fi
 fi
@@ -93,9 +96,10 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
 fi
 
-# -------- Launch as the unprivileged user --------
+# -------- Launch as the unprivileged user, from /config --------
+cd "${CONFIG_ROOT}"
 if [[ "$(id -u)" -eq 0 ]]; then
-  exec gosu "${PUID}:${PGID}" /app/MBBSEmu -C "${MODULES_JSON}"
+  exec gosu "${PUID}:${PGID}" /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
 else
-  exec /app/MBBSEmu -C "${MODULES_JSON}"
+  exec /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
 fi
