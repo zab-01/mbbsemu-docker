@@ -7,7 +7,7 @@ This image fetches the **latest stable** MBBSEmu release at build time and keeps
 - **Ports:** Telnet `23/tcp`, Rlogin `513/tcp`  
 - **Data:** bind-mount your host folder → `/config`
 
-> We do **not** ship proprietary game content. If you want to run MajorMUD or other modules, place their files under `/config/modules/<ModuleID>`. This image auto-detects MajorMUD (module id `WCCMMUD`) and loads it if present.
+> All emulator code and software in this image is pulled directly from the official **MBBSEmu** project releases at build time.
 
 ---
 
