@@ -10,15 +10,16 @@ MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
 RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
-# Defaults for a pull-&-run experience
+# Pull & run defaults
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
 
-# Run as an unprivileged user that matches host ownership (Unraid: 99/100)
+# Host UID/GID (Unraid: 99/100)
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
+# --- user / ownership ---------------------------------------------------------
 if [[ "$(id -u)" -eq 0 ]]; then
   getent group "${PGID}" >/dev/null 2>&1 || groupadd -g "${PGID}" mbbs || true
   if id -u mbbs >/dev/null 2>&1; then
@@ -33,11 +34,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
-# .NET single-file bundle cache under /config
+# .NET single-file cache in /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# --- appsettings.json in /config ---
+# --- seed/ensure appsettings.json --------------------------------------------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     log "Seeding appsettings.json from release"
@@ -64,7 +65,30 @@ fi
 # Force DB path to /config
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}" || true
 
-# --- Apply MajorMUD license (env -> JSON string) ---
+# --- ensure Account.DefaultKeys includes "MMUD" -------------------------------
+ensure_mmud_key() {
+  if command -v jq >/dev/null 2>&1; then
+    # Create Account/DefaultKeys if missing, append "MMUD" if not present
+    tmp="$(mktemp)"
+    jq '
+      (.Account //= {}) |
+      (.Account.DefaultKeys //= ["DEMO","NORMAL","USER","PAYING"]) |
+      (.Account.DefaultKeys |= (if index("MMUD")==null then . + ["MMUD"] else . end))
+    ' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
+  else
+    # Minimal sed fallback: if no Account block, inject one with MMUD
+    if ! grep -q '"Account"' "${APP_JSON}"; then
+      sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING","MMUD"] },/' "${APP_JSON}" || true
+    else
+      # Try to append "MMUD" if not already present
+      grep -q '"MMUD"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"MMUD"]/' "${APP_JSON}" || true
+    fi
+  fi
+  log 'Ensured Account.DefaultKeys contains "MMUD"'
+}
+ensure_mmud_key
+
+# --- licensing (GSBL.BTURNO as STRING) ---------------------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
@@ -76,17 +100,16 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# Optional activation into message file if present
+# Optional MajorMUD activation into WCCMMUD.MSG
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
-    # Replace {DEMO} token only; no regex chars from the code are treated specially
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
     log "Injected MajorMUD activation code"
   fi
 fi
 
-# --- Create modules.json if missing (auto-detect WCCMMUD) ---
+# --- modules.json (auto-enable WCCMMUD) --------------------------------------
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
   printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
 elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
@@ -99,23 +122,20 @@ elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 
-# --- Make module content readable regardless of weird perms ---
+# --- perms and lowercase shims ------------------------------------------------
 if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
   log "Normalizing permissions under ${MODULES_DIR}"
-  # Directories 755, files 644 (works even if some dirs start as --x)
   find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
   find "${MODULES_DIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
 fi
 
-# --- Robust case-fix for the two DOS executables (no globbing needed) ---
 if [[ "${MODULES_FIX_CASE}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
   d="${MODULES_DIR}/WCCMMUD"
-  # Create lowercase shims only if uppercase exists and lowercase is missing
   [[ -f "${d}/WCCMMUD.EXE"  && ! -e "${d}/wccmmud.EXE"  ]] && ln -sf "WCCMMUD.EXE"  "${d}/wccmmud.EXE"  || true
   [[ -f "${d}/WCCMMUTL.EXE" && ! -e "${d}/wccmmutl.EXE" ]] && ln -sf "WCCMMUTL.EXE" "${d}/wccmmutl.EXE" || true
 fi
 
-# --- First-run DB init (if SYSOP_PASSWORD provided and DB missing) ---
+# --- first-run DB init with SYSOP_PASSWORD -----------------------------------
 if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   log "Initializing database with provided SYSOP_PASSWORD"
   if [[ "$(id -u)" -eq 0 ]]; then
@@ -125,7 +145,7 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
 fi
 
-# --- Launch ---
+# --- start -------------------------------------------------------------------
 cd "${CONFIG_ROOT}"
 log "Starting MBBSEmu (Telnet 0.0.0.0:23, Rlogin 0.0.0.0:513)"
 if [[ "$(id -u)" -eq 0 ]]; then
