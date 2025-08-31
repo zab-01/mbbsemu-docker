@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+log(){ echo "[init] $*"; }
+
 CONFIG_ROOT="${CONFIG_ROOT:-/config}"
 APP_JSON_SRC="/app/appsettings.json"
 APP_JSON="${CONFIG_ROOT}/appsettings.json"
@@ -8,14 +10,17 @@ MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
 RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
+# Behavior toggles (all default ON for "pull & play")
+MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"   # build modules.json if missing
+MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"       # create lowercase symlinks
+MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}" # chmod -R u+rwX,go+rX on /config/modules
+
 # -------- PUID / PGID handling (drop privileges) --------
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
 if [[ "$(id -u)" -eq 0 ]]; then
-  if ! getent group "${PGID}" >/dev/null 2>&1; then
-    groupadd -g "${PGID}" mbbs 2>/dev/null || true
-  fi
+  getent group "${PGID}" >/dev/null 2>&1 || groupadd -g "${PGID}" mbbs || true
   if id -u mbbs >/dev/null 2>&1; then
     usermod -o -u "${PUID}" -g "${PGID}" -d "${CONFIG_ROOT}" mbbs || true
   else
@@ -28,15 +33,18 @@ if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
+# .NET single-file bundle cache under /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# -------- appsettings.json in /config --------
+# -------- Ensure appsettings.json exists in /config --------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
+    log "Seeding appsettings.json from release"
     install -o "${PUID}" -g "${PGID}" -m 0644 "${APP_JSON_SRC}" "${APP_JSON}"
   else
-cat > "${APP_JSON}" <<'JSON'
+    log "Creating default appsettings.json"
+    cat > "${APP_JSON}" <<'JSON'
 {
   "Application": {
     "BBSName": "MBBSEmu BBS",
@@ -45,7 +53,7 @@ cat > "${APP_JSON}" <<'JSON'
     "DoLoginRoutine": true
   },
   "Telnet": { "Enabled": true, "IP": "0.0.0.0", "Port": 23, "Heartbeat": false },
-  "Rlogin": { "Enabled": false, "IP": "0.0.0.0", "Port": 513, "PortPerModule": false },
+  "Rlogin": { "Enabled": true, "IP": "0.0.0.0", "Port": 513, "PortPerModule": false },
   "Database": { "File": "/config/mbbsemu.db" }
 }
 JSON
@@ -53,20 +61,10 @@ JSON
   fi
 fi
 
-# force DB path to /config/mbbsemu.db
+# Force DB path to /config/mbbsemu.db (some releases differ)
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}"
 
-# -------- modules.json (default, or inline override) --------
-if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
-  printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
-elif [[ ! -f "${MODULES_JSON}" ]]; then
-  cat > "${MODULES_JSON}" <<EOF
-{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "${MODULES_DIR}/WCCMMUD" } ] }
-EOF
-fi
-chown "${PUID}:${PGID}" "${MODULES_JSON}" || true
-
-# -------- MajorMUD licensing (BTURNO as *string*, pad to 8) --------
+# -------- Apply MajorMUD license (MUD_REG_NUMBER -> GSBL.BTURNO string) --------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
@@ -75,28 +73,29 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   else
     sed -E -i 's/("Application":[[:space:]]*\{)/\1\n    "GSBL.BTURNO": "'"${REG_PAD}"'",/' "${APP_JSON}" || true
   fi
+  log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
+# Optional: activation code into message file if present
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
     sed -i "s/{DEMO}/${MUD_ACTIVATION_CODE}/" "${MSG}" || true
+    log "Injected MajorMUD activation code"
   fi
 fi
 
-# -------- First-run DB init directly in /config (as unprivileged) --------
-if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
-  if [[ "$(id -u)" -eq 0 ]]; then
-    gosu "${PUID}:${PGID}" bash -lc "(cd '${CONFIG_ROOT}' && /app/MBBSEmu -DBRESET '${SYSOP_PASSWORD}')"
+# -------- Build modules.json if missing (auto-detect) --------
+if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
+  printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
+elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
+  mm_dir="${MODULES_DIR}/WCCMMUD"
+  if [[ -d "${mm_dir}" ]]; then
+    log "Auto-enabling WCCMMUD at ${mm_dir}"
+    cat > "${MODULES_JSON}" <<EOF
+{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "${mm_dir}" } ] }
+EOF
   else
-    (cd "${CONFIG_ROOT}" && /app/MBBSEmu -DBRESET "${SYSOP_PASSWORD}")
+    log "No modules detected; starting with none"
+    echo '{ "Modules": [] }' > "${MODULES_JSON}"
   fi
-fi
-
-# -------- Launch from /config so any new files go to the volume --------
-cd "${CONFIG_ROOT}"
-if [[ "$(id -u)" -eq 0 ]]; then
-  exec gosu "${PUID}:${PGID}" /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
-else
-  exec /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
-fi
