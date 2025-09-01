@@ -14,7 +14,7 @@ RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
-AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-false}"  # <-- new: opt-in
+AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-false}"  # opt-in: auto-enable module in DB on first boot
 
 # Host UID/GID (Unraid: 99/100 typical)
 PUID="${PUID:-1000}"
@@ -76,12 +76,13 @@ ensure_paying_key() {
       (.Account.DefaultKeys |= ( . + ["PAYING"] | unique))
     ' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
+    # minimal non-jq fallback
     if ! grep -q '"Account"' "${APP_JSON}"; then
       sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING"] },/' "${APP_JSON}" || true
     else
       grep -q '"PAYING"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"PAYING"]/' "${APP_JSON}" || true
     fi
-  fi>
+  fi
   log 'Ensured Account.DefaultKeys contains "PAYING"'
 }
 ensure_paying_key
@@ -165,7 +166,6 @@ auto_enable_wccmmud() {
   [[ -f "$db" ]] || { log "DB not found; skip auto-enable"; return 0; }
   command -v sqlite3 >/dev/null 2>&1 || { log "sqlite3 not available; skip auto-enable"; return 0; }
 
-  # Find a table/columns that look like modules with an enabled flag
   local tbl idcol encol
   for tbl in Modules Module ModuleConfig ModuleConfiguration TbModules; do
     if sqlite3 "$db" ".tables" | tr ' ' '\n' | grep -qi "^$tbl$"; then
