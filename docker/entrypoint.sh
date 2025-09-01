@@ -14,8 +14,9 @@ RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
+AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-false}"  # <-- new: opt-in
 
-# Host UID/GID (Unraid: 99/100)
+# Host UID/GID (Unraid: 99/100 typical)
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 
@@ -30,13 +31,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
-# ensure the directory itself is traversable/readable
 chmod u+rwx,go+rx "${CONFIG_ROOT}" 2>/dev/null || true
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
-# .NET single-file cache in /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
@@ -77,18 +76,17 @@ ensure_paying_key() {
       (.Account.DefaultKeys |= ( . + ["PAYING"] | unique))
     ' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
-    # minimal non-jq fallback: inject Account if missing, and ensure PAYING appears once
     if ! grep -q '"Account"' "${APP_JSON}"; then
       sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING"] },/' "${APP_JSON}" || true
     else
       grep -q '"PAYING"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"PAYING"]/' "${APP_JSON}" || true
     fi
-  fi
+  fi>
   log 'Ensured Account.DefaultKeys contains "PAYING"'
 }
 ensure_paying_key
 
-# --- licensing (GSBL.BTURNO as STRING at TOP-LEVEL) --------------------------
+# --- licensing (GSBL.BTURNO as top-level STRING) -----------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
@@ -96,7 +94,6 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
     tmp="$(mktemp)"
     jq --arg reg "${REG_PAD}" '.["GSBL.BTURNO"]=$reg' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
-    # fallback: if key exists anywhere, replace; else insert near top as top-level key
     if grep -q '"GSBL.BTURNO"' "${APP_JSON}"; then
       sed -E -i 's/"GSBL\.BTURNO":[^,}]+/"GSBL.BTURNO": "'"${REG_PAD}"'"/' "${APP_JSON}" || true
     else
@@ -106,7 +103,7 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# --- safer activation patch (replace WHOLE LINE) -----------------------------
+# --- activation line (replace WHOLE line) ------------------------------------
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
@@ -132,18 +129,17 @@ elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 
-# --- normalize perms on top-level config files -------------------------------
+# --- normalize perms on top-level config files --------------------------------
 for f in "${APP_JSON}" "${MODULES_JSON}" "${CONFIG_ROOT}/mbbsemu.db"; do
   [ -e "$f" ] && chmod u+rw,go+r "$f" 2>/dev/null || true
 done
 
-# --- perms and lowercase shims for modules -----------------------------------
+# --- perms & optional case shims for modules ----------------------------------
 if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
   log "Normalizing permissions under ${MODULES_DIR}"
   find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
   find "${MODULES_DIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
 fi
-
 if [[ "${MODULES_FIX_CASE}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
   d="${MODULES_DIR}/WCCMMUD"
   [[ -f "${d}/WCCMMUD.EXE"  && ! -e "${d}/wccmmud.EXE"  ]] && ln -sf "WCCMMUD.EXE"  "${d}/wccmmud.EXE"  || true
@@ -161,6 +157,32 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
   [ -f "${CONFIG_ROOT}/mbbsemu.db" ] && chmod u+rw,go+r "${CONFIG_ROOT}/mbbsemu.db" 2>/dev/null || true
 fi
+
+# --- optional: auto-enable WCCMMUD in DB (best-effort) ------------------------
+auto_enable_wccmmud() {
+  [[ "${AUTO_ENABLE_WCCMMUD}" == "true" ]] || return 0
+  local db="${CONFIG_ROOT}/mbbsemu.db"
+  [[ -f "$db" ]] || { log "DB not found; skip auto-enable"; return 0; }
+  command -v sqlite3 >/dev/null 2>&1 || { log "sqlite3 not available; skip auto-enable"; return 0; }
+
+  # Find a table/columns that look like modules with an enabled flag
+  local tbl idcol encol
+  for tbl in Modules Module ModuleConfig ModuleConfiguration TbModules; do
+    if sqlite3 "$db" ".tables" | tr ' ' '\n' | grep -qi "^$tbl$"; then
+      local cols; cols=$(sqlite3 "$db" "PRAGMA table_info($tbl);" | awk -F'|' '{print tolower($2)}')
+      idcol=$(echo "$cols" | grep -E '^(identifier|moduleid|id)$' | head -1 || true)
+      encol=$(echo "$cols" | grep -E '^(enabled|is_enabled|active)$' | head -1 || true)
+      if [[ -n "${idcol:-}" && -n "${encol:-}" ]]; then
+        if sqlite3 "$db" "UPDATE $tbl SET $encol=1 WHERE lower($idcol)='wccmmud';"; then
+          log "Auto-enabled WCCMMUD in DB table '$tbl' ($idcol/$encol)"
+          return 0
+        fi
+      fi
+    fi
+  done
+  log "Could not auto-enable WCCMMUD (unknown DB schema) — enable once via /SYS ENABLE WCCMMUD"
+}
+auto_enable_wccmmud
 
 # --- start -------------------------------------------------------------------
 cd "${CONFIG_ROOT}"

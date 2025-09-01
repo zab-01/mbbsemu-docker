@@ -10,9 +10,9 @@ services:
       PUID: "1000"
       PGID: "1000"
       SYSOP_PASSWORD: "testpass"
-      # Wiki demo pair — replace with your own for production
-      MUD_REG_NUMBER: "00053261"
-      MUD_ACTIVATION_CODE: "bjh^^dl^^dl"
+      MUD_REG_NUMBER: "12345678"        # <- set yours
+      MUD_ACTIVATION_CODE: "dlhbdfhjlnp" # <- set yours
+      AUTO_ENABLE_WCCMMUD: "true"       # <- new
     volumes:
       - ./config:/config
     restart: unless-stopped

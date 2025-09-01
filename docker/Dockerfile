@@ -13,7 +13,7 @@ ENV MBBSEMU_HOME=/app \
 RUN apt-get update \
  && apt-get -y upgrade \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip bash libcap2-bin gosu jq \
+      ca-certificates curl unzip bash libcap2-bin gosu jq sqlite3 \
       libncursesw6 \
  && rm -rf /var/lib/apt/lists/*
 
