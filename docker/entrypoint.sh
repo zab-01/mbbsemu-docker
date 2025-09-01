@@ -67,59 +67,64 @@ fi
 # Force DB path to /config
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}" || true
 
-# --- ensure Account.DefaultKeys includes "MMUD" -------------------------------
-ensure_mmud_key() {
+# --- ensure Account.DefaultKeys includes "PAYING" -----------------------------
+ensure_paying_key() {
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
     jq '
       (.Account //= {}) |
-      (.Account.DefaultKeys //= ["DEMO","NORMAL","USER","PAYING"]) |
-      (.Account.DefaultKeys |= (if index("MMUD")==null then . + ["MMUD"] else . end))
+      (.Account.DefaultKeys //= ["DEMO","NORMAL","USER"]) |
+      (.Account.DefaultKeys |= ( . + ["PAYING"] | unique))
     ' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
+    # minimal non-jq fallback: inject Account if missing, and ensure PAYING appears once
     if ! grep -q '"Account"' "${APP_JSON}"; then
-      sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING","MMUD"] },/' "${APP_JSON}" || true
+      sed -E -i 's/^\{/\{\n  "Account": { "DefaultKeys": ["DEMO","NORMAL","USER","PAYING"] },/' "${APP_JSON}" || true
     else
-      grep -q '"MMUD"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"MMUD"]/' "${APP_JSON}" || true
+      grep -q '"PAYING"' "${APP_JSON}" || sed -E -i 's/("DefaultKeys"[[:space:]]*:[[:space:]]*\[[^]]*)\]/\1,"PAYING"]/' "${APP_JSON}" || true
     fi
   fi
-  log 'Ensured Account.DefaultKeys contains "MMUD"'
+  log 'Ensured Account.DefaultKeys contains "PAYING"'
 }
-ensure_mmud_key
+ensure_paying_key
 
-# --- licensing (GSBL.BTURNO as STRING) ---------------------------------------
+# --- licensing (GSBL.BTURNO as STRING at TOP-LEVEL) --------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
   REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
-  if grep -q '"GSBL.BTURNO"' "${APP_JSON}"; then
-    sed -E -i 's/"GSBL\.BTURNO":[^,}]+/"GSBL.BTURNO": "'"${REG_PAD}"'"/' "${APP_JSON}" || true
+  if command -v jq >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    jq --arg reg "${REG_PAD}" '.["GSBL.BTURNO"]=$reg' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
   else
-    sed -E -i 's/("Application":[[:space:]]*\{)/\1\n    "GSBL.BTURNO": "'"${REG_PAD}"'",/' "${APP_JSON}" || true
+    # fallback: if key exists anywhere, replace; else insert near top as top-level key
+    if grep -q '"GSBL.BTURNO"' "${APP_JSON}"; then
+      sed -E -i 's/"GSBL\.BTURNO":[^,}]+/"GSBL.BTURNO": "'"${REG_PAD}"'"/' "${APP_JSON}" || true
+    else
+      sed -E -i '0,/\{/{s/\{/\{\n  "GSBL.BTURNO": "'"${REG_PAD}"'",/}' "${APP_JSON}" || true
+    fi
   fi
   log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-# --- safer activation patch ---
+# --- safer activation patch (replace WHOLE LINE) -----------------------------
 if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
   if [[ -f "${MSG}" ]]; then
-    # Replace ONLY the ACTIVATE line, preserving the rest of the MSG file
-    sed -E -i 's/^ACTIVATE \{[^}]*\}/ACTIVATE {'"${MUD_ACTIVATION_CODE}"'}/' "${MSG}" || true
+    safe=$(printf "%s" "${MUD_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')
+    sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${MSG}" || true
     log "Injected MajorMUD activation code (ACTIVATE line)"
   fi
 else
-  # Ensure demo line is correct if no activation provided
   MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
-  [[ -f "${MSG}" ]] && sed -E -i 's/^ACTIVATE \{[^}]*\}/ACTIVATE {DEMO}/' "${MSG}" || true
+  [[ -f "${MSG}" ]] && sed -E -i 's/^ACTIVATE \{[^}]*\}.*/ACTIVATE {DEMO}/' "${MSG}" || true
 fi
 
-
-# --- modules.json (auto-enable WCCMMUD) --------------------------------------
+# --- modules.json (auto-add WCCMMUD if present) ------------------------------
 if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
   printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
 elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
   if [[ -d "${MODULES_DIR}/WCCMMUD" ]]; then
-    log "Auto-enabling WCCMMUD"
+    log "Auto-adding WCCMMUD to modules.json"
     printf '{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "/config/modules/WCCMMUD" } ] }\n' > "${MODULES_JSON}"
   else
     printf '{ "Modules": [] }\n' > "${MODULES_JSON}"
@@ -127,7 +132,7 @@ elif [[ ! -f "${MODULES_JSON}" && "${MODULES_AUTODETECT}" == "true" ]]; then
 fi
 chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 
-# --- normalize perms on top-level config files --------------------------------
+# --- normalize perms on top-level config files -------------------------------
 for f in "${APP_JSON}" "${MODULES_JSON}" "${CONFIG_ROOT}/mbbsemu.db"; do
   [ -e "$f" ] && chmod u+rw,go+r "$f" 2>/dev/null || true
 done
@@ -148,14 +153,12 @@ fi
 # --- first-run DB init with SYSOP_PASSWORD -----------------------------------
 if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   log "Initializing database with provided SYSOP_PASSWORD"
-  # ensure readable appsettings before DBRESET attempt
   chmod u+rw,go+r "${APP_JSON}" 2>/dev/null || true
   if [[ "$(id -u)" -eq 0 ]]; then
     gosu "${PUID}:${PGID}" bash -lc "(cd '${CONFIG_ROOT}' && /app/MBBSEmu -DBRESET '${SYSOP_PASSWORD}')"
   else
     (cd "${CONFIG_ROOT}" && /app/MBBSEmu -DBRESET "${SYSOP_PASSWORD}")
   fi
-  # the DB was created—make sure current user can write it later too
   [ -f "${CONFIG_ROOT}/mbbsemu.db" ] && chmod u+rw,go+r "${CONFIG_ROOT}/mbbsemu.db" 2>/dev/null || true
 fi
 
@@ -167,4 +170,3 @@ if [[ "$(id -u)" -eq 0 ]]; then
 else
   exec /app/MBBSEmu -S "${APP_JSON}" -C "${MODULES_JSON}"
 fi
-
