@@ -10,9 +10,9 @@ services:
       PUID: "1000"
       PGID: "1000"
       SYSOP_PASSWORD: "testpass"
-      # Licensing (optional)
-      MUD_REG_NUMBER: "12345678"
-      MUD_ACTIVATION_CODE: "dlhbdfhjlnp"
+      # Wiki demo pair — replace with your own for production
+      MUD_REG_NUMBER: "00053261"
+      MUD_ACTIVATION_CODE: "bjh^^dl^^dl"
     volumes:
       - ./config:/config
     restart: unless-stopped
