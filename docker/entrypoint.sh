@@ -104,7 +104,9 @@ fi
 # --- licensing (GSBL.BTURNO as ROOT-LEVEL string) ----------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
-  REG_PAD="$(printf "%08d" "${REG_RAW:-0}")"
+  # Force base 10 so leading zeros don't trigger octal parsing
+  REG_PAD="$(printf "%08d" "$((10#${REG_RAW:-0}))")"
+
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
     jq --arg reg "${REG_PAD}" '.["GSBL.BTURNO"]=$reg' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
@@ -117,6 +119,7 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
   fi
   log "Applied GSBL.BTURNO=${REG_PAD}"
 fi
+
 
 # --- patch activation lines in message files ---------------------------------
 mmud_msg="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
