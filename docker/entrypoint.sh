@@ -8,23 +8,31 @@ APP_JSON_SRC="/app/appsettings.json"
 APP_JSON="${CONFIG_ROOT}/appsettings.json"
 MODULES_JSON="${CONFIG_ROOT}/modules.json"
 MODULES_DIR="${CONFIG_ROOT}/modules"
+WCCDIR="${MODULES_DIR}/WCCMMUD"
 RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 
-# Pull & run defaults
+# Behavior flags (pull & run defaults)
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
-AUTO_FETCH_WCCMMUD="${AUTO_FETCH_WCCMMUD:-true}"
-AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-true}"
 
-# Licensing
+# Auto-fetch MajorMUD content if missing — SINGLE ZIP (v2)
+AUTO_FETCH_WCCMMUD="${AUTO_FETCH_WCCMMUD:-true}"
+WCCMMUD_URL_DEFAULT="https://download.mbbsemu.com/modules/WCCMMUD/WCCMMUD_1.11p_DOS_MBBSEmu_v2.zip"
+# Back-compat: allow WCCMMUD_URL2 env to override if someone still sets it
+WCCMMUD_URL="${WCCMMUD_URL:-${WCCMMUD_URL2:-$WCCMMUD_URL_DEFAULT}}"
+
+# Optional DB nudge
+AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-false}" # off by default (schema varies)
+
+# Host UID/GID (Unraid typical: 99/100)
+PUID="${PUID:-1000}"
+PGID="${PGID:-1000}"
+
+# Licensing envs (optional)
 MUD_REG_NUMBER="${MUD_REG_NUMBER:-}"
 MUD_ACTIVATION_CODE="${MUD_ACTIVATION_CODE:-}"
 MUD_PLUS_ACTIVATION_CODE="${MUD_PLUS_ACTIVATION_CODE:-}"
-
-# Host UID/GID (Unraid: 99/100)
-PUID="${PUID:-1000}"
-PGID="${PGID:-1000}"
 
 # --- user / ownership ---------------------------------------------------------
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -45,7 +53,7 @@ fi
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
-# --- seed/ensure appsettings.json --------------------------------------------
+# --- appsettings.json ---------------------------------------------------------
 if [[ ! -f "${APP_JSON}" ]]; then
   if [[ -f "${APP_JSON_SRC}" ]]; then
     log "Seeding appsettings.json from release"
@@ -72,7 +80,7 @@ fi
 # Force DB path to /config
 sed -i 's#"File"[[:space:]]*:[[:space:]]*"[^"]*"#"File": "/config/mbbsemu.db"#g' "${APP_JSON}" || true
 
-# --- ensure Account.DefaultKeys includes PAYING -------------------------------
+# Ensure Account.DefaultKeys contains PAYING
 ensure_paying_key() {
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
@@ -92,10 +100,9 @@ ensure_paying_key() {
 }
 ensure_paying_key
 
-# --- GSBL.BTURNO --------------------------------------------------------------
+# Apply GSBL.BTURNO if provided (base-10 safe, keep leading zeros)
 if [[ -n "${MUD_REG_NUMBER}" ]]; then
   REG_RAW="$(printf '%s' "${MUD_REG_NUMBER}" | tr -cd '0-9')"
-  # Use base-10 printf to avoid octal interpretation
   REG_PAD="$(printf '%08d' $((10#${REG_RAW:-0})))"
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
@@ -110,51 +117,83 @@ if [[ -n "${MUD_REG_NUMBER}" ]]; then
   log "Applied GSBL.BTURNO=${REG_PAD}"
 fi
 
-# --- (optional) fetch WCCMMUD pack into /config/modules/WCCMMUD --------------
+# --- auto-fetch MajorMUD (single ZIP) if missing -----------------------------
+fetch_and_merge_zip() {
+  local url="$1"
+  local t; t="$(mktemp -d)"
+  log "Fetching: ${url}"
+  curl -fL --retry 3 --retry-delay 2 -o "${t}/pkg.zip" "${url}"
+  mkdir -p "${t}/x"
+  unzip -oqq "${t}/pkg.zip" -d "${t}/x"
+  mkdir -p "${WCCDIR}"
+  shopt -s dotglob nullglob
+  local src
+  if [[ -d "${t}/x/WCCMMUD" ]]; then
+    src="${t}/x/WCCMMUD"
+  else
+    src="${t}/x"
+  fi
+  cp -a "${src}/." "${WCCDIR}/"
+  shopt -u dotglob nullglob
+  rm -rf "${t}"
+}
+
+need_wccmmud() {
+  [[ ! -d "${WCCDIR}" ]] && return 0
+  [[ ! -f "${WCCDIR}/WCCMMUD.DLL" ]] && return 0
+  [[ ! -f "${WCCDIR}/WCCMMUD.MSG" ]] && return 0
+  return 1
+}
+
 maybe_fetch_wccmmud() {
-  local d="${MODULES_DIR}/WCCMMUD"
   [[ "${AUTO_FETCH_WCCMMUD}" == "true" ]] || return 0
-  [[ -d "${d}" ]] && [[ -n "$(ls -A "${d}" 2>/dev/null)" ]] && return 0
-  # No network fetch here (offline-friendly). If you want auto-download, wire it here.
-  return 0
+  if need_wccmmud; then
+    log "WCCMMUD content missing; auto-fetch enabled"
+    fetch_and_merge_zip "${WCCMMUD_URL}"
+    if [[ -d "${WCCDIR}" ]]; then
+      find "${WCCDIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
+      find "${WCCDIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
+      chown -R "${PUID}:${PGID}" "${WCCDIR}" 2>/dev/null || true
+      local count; count=$(find "${WCCDIR}" -type f | wc -l | tr -d ' ')
+      log "WCCMMUD ready (${count} files)"
+    fi
+  fi
 }
 maybe_fetch_wccmmud
 
 # --- patch activation lines ---------------------------------------------------
 patch_activation() {
   local msg
-  if [[ -n "${MUD_ACTIVATION_CODE}" ]]; then
-    msg="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
-    if [[ -f "${msg}" ]]; then
-      local safe; safe="$(printf '%s' "${MUD_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')"
-      sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${msg}" || true
-      log "Patched WCCMMUD activation"
-    fi
+  # MajorMUD
+  msg="${WCCDIR}/WCCMMUD.MSG"
+  if [[ -n "${MUD_ACTIVATION_CODE}" && -f "${msg}" ]]; then
+    local safe; safe="$(printf '%s' "${MUD_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')"
+    sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${msg}" || true
+    log "Patched WCCMMUD activation"
   fi
-  if [[ -n "${MUD_PLUS_ACTIVATION_CODE}" ]]; then
-    msg="${MODULES_DIR}/WCCMMUD/WCCMMPLS.MSG"
-    if [[ -f "${msg}" ]]; then
-      local safe; safe="$(printf '%s' "${MUD_PLUS_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')"
-      sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${msg}" || true
-      log "Patched WCCMMPLS activation"
-    fi
+  # MajorMUD Plus
+  msg="${WCCDIR}/WCCMMPLS.MSG"
+  if [[ -n "${MUD_PLUS_ACTIVATION_CODE}" && -f "${msg}" ]]; then
+    local safe; safe="$(printf '%s' "${MUD_PLUS_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')"
+    sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${msg}" || true
+    log "Patched WCCMMPLS activation"
   fi
 }
 patch_activation
 
-# --- ensure modules.json exists (add WCCMMUD if dir present) -----------------
+# --- modules.json (create if missing; add WCCMMUD when present) --------------
 ensure_modules_json() {
-  if [[ ! -f "${MODULES_JSON}" ]]; then
-    if [[ "${MODULES_AUTODETECT}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
+  if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
+    printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
+  elif [[ ! -f "${MODULES_JSON}" ]]; then
+    if [[ -d "${WCCDIR}" ]]; then
       log "Creating modules.json with WCCMMUD"
       printf '{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "/config/modules/WCCMMUD" } ] }\n' > "${MODULES_JSON}"
     else
-      log "Creating empty modules.json"
       printf '{ "Modules": [] }\n' > "${MODULES_JSON}"
     fi
-    chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
-    chmod u+rw,go+r "${MODULES_JSON}" 2>/dev/null || true
   fi
+  chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
 }
 ensure_modules_json
 
@@ -168,13 +207,14 @@ if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
   find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
   find "${MODULES_DIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
 fi
-if [[ "${MODULES_FIX_CASE}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
-  d="${MODULES_DIR}/WCCMMUD"
+
+if [[ "${MODULES_FIX_CASE}" == "true" && -d "${WCCDIR}" ]]; then
+  d="${WCCDIR}"
   [[ -f "${d}/WCCMMUD.EXE"  && ! -e "${d}/wccmmud.EXE"  ]] && ln -sf "WCCMMUD.EXE"  "${d}/wccmmud.EXE"  || true
   [[ -f "${d}/WCCMMUTL.EXE" && ! -e "${d}/wccmmutl.EXE" ]] && ln -sf "WCCMMUTL.EXE" "${d}/wccmmutl.EXE" || true
 fi
 
-# --- first-run DB init with SYSOP_PASSWORD -----------------------------------
+# --- first-run DB init --------------------------------------------------------
 if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   log "Initializing database with provided SYSOP_PASSWORD"
   chmod u+rw,go+r "${APP_JSON}" 2>/dev/null || true
@@ -186,30 +226,20 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   [ -f "${CONFIG_ROOT}/mbbsemu.db" ] && chmod u+rw,go+r "${CONFIG_ROOT}/mbbsemu.db" 2>/dev/null || true
 fi
 
-# --- optional: auto-enable WCCMMUD in DB (OFF by default) --------------------
-auto_enable_wccmmud() {
-  local db="${CONFIG_ROOT}/mbbsemu.db"
-  [[ "${AUTO_ENABLE_WCCMMUD}" == "true" ]] || return 0
-  [[ -f "$db" ]] || { log "DB not found; skip auto-enable"; return 0; }
-  command -v sqlite3 >/dev/null 2>&1 || { log "sqlite3 not available; skip auto-enable"; return 0; }
-
-  # Try a few common table/column names; ignore errors.
+# --- optional: auto-enable in DB (best effort; schema varies) -----------------
+if [[ "${AUTO_ENABLE_WCCMMUD}" == "true" && -f "${CONFIG_ROOT}/mbbsemu.db" && -x "$(command -v sqlite3)" ]]; then
   for tbl in Modules Module ModuleConfig ModuleConfiguration TbModules; do
-    if sqlite3 "$db" ".tables" | tr ' ' '\n' | grep -qi "^$tbl$"; then
-      local cols; cols=$(sqlite3 "$db" "PRAGMA table_info($tbl);" | awk -F'|' '{print tolower($2)}')
-      local idcol encol
-      idcol=$(echo "$cols" | grep -E '^(identifier|moduleid|id)$' | head -1 || true)
-      encol=$(echo "$cols" | grep -E '^(enabled|is_enabled|active)$' | head -1 || true)
+    if sqlite3 "${CONFIG_ROOT}/mbbsemu.db" ".tables" | tr ' ' '\n' | grep -qi "^$tbl$"; then
+      cols="$(sqlite3 "${CONFIG_ROOT}/mbbsemu.db" "PRAGMA table_info($tbl);" | awk -F'|' '{print tolower($2)}')"
+      idcol="$(echo "$cols" | grep -E '^(identifier|moduleid|id)$' | head -1 || true)"
+      encol="$(echo "$cols" | grep -E '^(enabled|is_enabled|active)$' | head -1 || true)"
       if [[ -n "${idcol:-}" && -n "${encol:-}" ]]; then
-        sqlite3 "$db" "UPDATE $tbl SET $encol=1 WHERE lower($idcol)='wccmmud';" || true
-        log "Auto-enabled WCCMMUD in DB table '$tbl' ($idcol/$encol)"
-        return 0
+        sqlite3 "${CONFIG_ROOT}/mbbsemu.db" "UPDATE $tbl SET $encol=1 WHERE lower($idcol)='wccmmud';" && log "Auto-enabled WCCMMUD in DB ($tbl)"
+        break
       fi
     fi
   done
-  log "Could not auto-enable WCCMMUD (unknown DB schema) — enable once via /SYS ENABLE WCCMMUD"
-}
-auto_enable_wccmmud
+fi
 
 # --- start -------------------------------------------------------------------
 cd "${CONFIG_ROOT}"
