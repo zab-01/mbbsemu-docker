@@ -14,15 +14,11 @@ RUNTIME_CACHE="${CONFIG_ROOT}/.net"
 MODULES_AUTODETECT="${MODULES_AUTODETECT:-true}"
 MODULES_FIX_CASE="${MODULES_FIX_CASE:-true}"
 MODULES_RELAX_PERMS="${MODULES_RELAX_PERMS:-true}"
+AUTO_ENABLE_WCCMMUD="${AUTO_ENABLE_WCCMMUD:-false}"
 
-# Host UID/GID (Unraid typical: 99/100 – you can override with PUID/PGID)
+# Host UID/GID (Unraid common: 99/100)
 PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
-
-# Your private defaults (can still be overridden by env)
-: "${MUD_REG_NUMBER:=00697484}"     # goes to GSBL.BTURNO (8 digits)
-: "${MUD_ACTIVATION_CODE:=XUXUTVSTWU}"
-: "${MUD_PLUS_ACTIVATION_CODE:=XVDXBUATGZ}"
 
 # --- user / ownership ---------------------------------------------------------
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -35,13 +31,11 @@ if [[ "$(id -u)" -eq 0 ]]; then
 fi
 
 mkdir -p "${MODULES_DIR}" "${CONFIG_ROOT}/logs" "${RUNTIME_CACHE}"
-# ensure the directory itself is traversable/readable
 chmod u+rwx,go+rx "${CONFIG_ROOT}" 2>/dev/null || true
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R "${PUID}:${PGID}" "${CONFIG_ROOT}" || true
 fi
 
-# .NET single-file cache in /config
 export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${RUNTIME_CACHE}"
 export HOME="${CONFIG_ROOT}"
 
@@ -92,21 +86,47 @@ ensure_paying_key() {
 }
 ensure_paying_key
 
-# --- Btrieve cache floor (helps with "game full") -----------------------------
-if command -v jq >/dev/null 2>&1; then
-  tmp="$(mktemp)"
-  jq '(.["Btrieve.CacheSize"] // 4) as $n | if ($n|tonumber) < 64 then .["Btrieve.CacheSize"]=64 else . end' \
-    "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
-else
-  sed -E -i 's/("Btrieve\.CacheSize"[[:space:]]*:[[:space:]]*)[0-9]+/\1 64/' "${APP_JSON}" || true
-fi
+# --- seed WCCMMUD from the release into /config if missing -------------------
+seed_modules_from_release() {
+  local tgt="${MODULES_DIR}/WCCMMUD"
+  [[ -d "$tgt" ]] && return 0
 
-# --- licensing (GSBL.BTURNO as ROOT-LEVEL string) ----------------------------
+  # common locations in the upstream release
+  local try=(
+    "/app/modules/WCCMMUD"
+    "/app/pkg/WCCMMUD"
+    "/app/WCCMMUD"
+  )
+
+  for src in "${try[@]}"; do
+    if [[ -d "$src" ]]; then
+      log "Seeding WCCMMUD from ${src}"
+      mkdir -p "${MODULES_DIR}"
+      cp -a "$src" "$tgt"
+      [[ "$(id -u)" -eq 0 ]] && chown -R "${PUID}:${PGID}" "$tgt" || true
+      return 0
+    fi
+  done
+
+  # zip fallback
+  shopt -s nullglob
+  local z
+  for z in /app/*WCCMMUD*.zip; do
+    log "Extracting $(basename "$z") to ${tgt}"
+    mkdir -p "$tgt"
+    unzip -oqq "$z" -d "$tgt"
+    [[ "$(id -u)" -eq 0 ]] && chown -R "${PUID}:${PGID}" "$tgt" || true
+    return 0
+  done
+  shopt -u nullglob
+}
+seed_modules_from_release
+
+# --- licensing (GSBL.BTURNO as top-level STRING) -----------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
+  # force base-10 to avoid "invalid octal number" when value starts with 0
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
-  # Force base 10 so leading zeros don't trigger octal parsing
-  REG_PAD="$(printf "%08d" "$((10#${REG_RAW:-0}))")"
-
+  REG_PAD="$(printf "%08d" "10#${REG_RAW:-0}")"
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
     jq --arg reg "${REG_PAD}" '.["GSBL.BTURNO"]=$reg' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
@@ -117,24 +137,27 @@ if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
       sed -E -i '0,/\{/{s/\{/\{\n  "GSBL.BTURNO": "'"${REG_PAD}"'",/}' "${APP_JSON}" || true
     fi
   fi
-  log "Applied GSBL.BTURNO=${REG_PAD}"
+  log "Applied GSBL.BTURNO=${REG_PAD} from env"
 fi
 
-
-# --- patch activation lines in message files ---------------------------------
-mmud_msg="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
-mmpl_msg="${MODULES_DIR}/WCCMMUD/WCCMMPLS.MSG"
-
-if [[ -n "${MUD_ACTIVATION_CODE:-}" && -f "${mmud_msg}" ]]; then
-  safe=$(printf "%s" "${MUD_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')
-  sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${mmud_msg}" || true
-  log "Injected MajorMUD activation code"
+# --- activation lines ---------------------------------------------------------
+# MajorMUD
+if [[ -n "${MUD_ACTIVATION_CODE:-}" ]]; then
+  MSG="${MODULES_DIR}/WCCMMUD/WCCMMUD.MSG"
+  if [[ -f "${MSG}" ]]; then
+    safe=$(printf "%s" "${MUD_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')
+    sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${MSG}" || true
+    log "Injected MajorMUD activation code"
+  fi
 fi
-
-if [[ -n "${MUD_PLUS_ACTIVATION_CODE:-}" && -f "${mmpl_msg}" ]]; then
-  safe=$(printf "%s" "${MUD_PLUS_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')
-  sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safe}}/" "${mmpl_msg}" || true
-  log "Injected MajorMUD Plus activation code"
+# MajorMUD Plus
+if [[ -n "${MUD_PLUS_ACTIVATION_CODE:-}" ]]; then
+  PMSG="${MODULES_DIR}/WCCMMUD/WCCMMPLS.MSG"
+  if [[ -f "${PMSG}" ]]; then
+    safep=$(printf "%s" "${MUD_PLUS_ACTIVATION_CODE}" | sed -e 's/[&/]/\\&/g')
+    sed -E -i "s/^ACTIVATE \{[^}]*\}.*/ACTIVATE {${safep}}/" "${PMSG}" || true
+    log "Injected MajorMUD Plus activation code"
+  fi
 fi
 
 # --- modules.json (auto-add WCCMMUD if present) ------------------------------
@@ -155,13 +178,12 @@ for f in "${APP_JSON}" "${MODULES_JSON}" "${CONFIG_ROOT}/mbbsemu.db"; do
   [ -e "$f" ] && chmod u+rw,go+r "$f" 2>/dev/null || true
 done
 
-# --- perms and lowercase shims for modules -----------------------------------
+# --- perms & optional case shims for modules ----------------------------------
 if [[ -d "${MODULES_DIR}" && "${MODULES_RELAX_PERMS}" == "true" ]]; then
   log "Normalizing permissions under ${MODULES_DIR}"
   find "${MODULES_DIR}" -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
   find "${MODULES_DIR}" -type f -exec chmod u+rw,go+r {} + 2>/dev/null || true
 fi
-
 if [[ "${MODULES_FIX_CASE}" == "true" && -d "${MODULES_DIR}/WCCMMUD" ]]; then
   d="${MODULES_DIR}/WCCMMUD"
   [[ -f "${d}/WCCMMUD.EXE"  && ! -e "${d}/wccmmud.EXE"  ]] && ln -sf "WCCMMUD.EXE"  "${d}/wccmmud.EXE"  || true
@@ -179,6 +201,31 @@ if [[ ! -f "${CONFIG_ROOT}/mbbsemu.db" && -n "${SYSOP_PASSWORD:-}" ]]; then
   fi
   [ -f "${CONFIG_ROOT}/mbbsemu.db" ] && chmod u+rw,go+r "${CONFIG_ROOT}/mbbsemu.db" 2>/dev/null || true
 fi
+
+# --- (optional) try to auto-enable WCCMMUD in DB ------------------------------
+auto_enable_wccmmud() {
+  [[ "${AUTO_ENABLE_WCCMMUD}" == "true" ]] || return 0
+  local db="${CONFIG_ROOT}/mbbsemu.db"
+  [[ -f "$db" ]] || { log "DB not found; skip auto-enable"; return 0; }
+  command -v sqlite3 >/dev/null 2>&1 || { log "sqlite3 not available; skip auto-enable"; return 0; }
+
+  local tbl idcol encol
+  for tbl in Modules Module ModuleConfig ModuleConfiguration TbModules; do
+    if sqlite3 "$db" ".tables" | tr ' ' '\n' | grep -qi "^$tbl$"; then
+      local cols; cols=$(sqlite3 "$db" "PRAGMA table_info($tbl);" | awk -F'|' '{print tolower($2)}')
+      idcol=$(echo "$cols" | grep -E '^(identifier|moduleid|id)$' | head -1 || true)
+      encol=$(echo "$cols" | grep -E '^(enabled|is_enabled|active)$' | head -1 || true)
+      if [[ -n "${idcol:-}" && -n "${encol:-}" ]]; then
+        if sqlite3 "$db" "UPDATE $tbl SET $encol=1 WHERE lower($idcol)='wccmmud';"; then
+          log "Auto-enabled WCCMMUD in DB table '$tbl' ($idcol/$encol)"
+          return 0
+        fi
+      fi
+    fi
+  done
+  log "Could not auto-enable WCCMMUD (unknown DB schema) — enable once via /SYS ENABLE WCCMMUD"
+}
+auto_enable_wccmmud
 
 # --- start -------------------------------------------------------------------
 cd "${CONFIG_ROOT}"
