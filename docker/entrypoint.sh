@@ -91,7 +91,6 @@ seed_modules_from_release() {
   local tgt="${MODULES_DIR}/WCCMMUD"
   [[ -d "$tgt" ]] && return 0
 
-  # common locations in the upstream release
   local try=(
     "/app/modules/WCCMMUD"
     "/app/pkg/WCCMMUD"
@@ -108,7 +107,6 @@ seed_modules_from_release() {
     fi
   done
 
-  # zip fallback
   shopt -s nullglob
   local z
   for z in /app/*WCCMMUD*.zip; do
@@ -122,11 +120,10 @@ seed_modules_from_release() {
 }
 seed_modules_from_release
 
-# --- licensing (GSBL.BTURNO as top-level STRING) -----------------------------
+# --- licensing (GSBL.BTURNO as STRING, force base-10) ------------------------
 if [[ -n "${MUD_REG_NUMBER:-}" ]]; then
-  # force base-10 to avoid "invalid octal number" when value starts with 0
   REG_RAW="$(printf "%s" "${MUD_REG_NUMBER}" | tr -cd '0-9')"
-  REG_PAD="$(printf "%08d" "10#${REG_RAW:-0}")"
+  REG_PAD="$(printf "%08d" "$((10#${REG_RAW:-0}))")"
   if command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
     jq --arg reg "${REG_PAD}" '.["GSBL.BTURNO"]=$reg' "${APP_JSON}" > "${tmp}" && mv "${tmp}" "${APP_JSON}"
