@@ -140,6 +140,11 @@ Unraid/macvlan static IP: connect directly to container IP on port `23`.
 
 ---
 
+First login (once):
+  /SYS ADDKEY sysop WCCSYSOP
+  /SYS ENABLE WCCMMUD
+
+---
 ## Upgrading
 
 All state is in `/config`, so upgrades are trivial:

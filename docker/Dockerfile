@@ -9,7 +9,8 @@ ENV MBBSEMU_HOME=/app \
     TERM=xterm \
     PATH="/app:${PATH}"
 
-# keep base patched; install tooling and runtime libs (ICU from base, ncurses here)
+# keep base patched; install tooling and runtime libs
+# (ICU comes from base, ncurses here; add jq, unzip, sqlite3, gosu, libcap2-bin)
 RUN apt-get update \
  && apt-get -y upgrade \
  && apt-get install -y --no-install-recommends \
@@ -19,7 +20,6 @@ RUN apt-get update \
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# ----- build-time area -----
 WORKDIR /app
 
 # scripts
@@ -43,10 +43,8 @@ EXPOSE 23 513
 # allow binding low ports as non-root
 RUN setcap 'cap_net_bind_service=+ep' /app/MBBSEmu || true
 
-# ----- runtime area -----
-# start in /config so any generated files (e.g., BBSGEN.DB) go to the bind mount
+# start in /config so generated files land in the volume
 WORKDIR /config
 
-# entrypoint will drop to PUID/PGID via gosu
 USER root
 ENTRYPOINT ["/entrypoint.sh"]

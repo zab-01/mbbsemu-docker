@@ -7,12 +7,15 @@ services:
       - "1513:513"
     environment:
       TZ: America/Chicago
-      PUID: "1000"
-      PGID: "1000"
+      PUID: "99"     # Unraid typical
+      PGID: "100"    # Unraid typical
       SYSOP_PASSWORD: "testpass"
-      MUD_REG_NUMBER: "12345678"        # <- set yours
-      MUD_ACTIVATION_CODE: "dlhbdfhjlnp" # <- set yours
-      AUTO_ENABLE_WCCMMUD: "true"       # <- new
+      # Optional overrides (defaults already baked in):
+      # MUD_REG_NUMBER: "12345678"
+      # MUD_ACTIVATION_CODE: "dlhbdfhjlnp"
+      # MUD_PLUS_ACTIVATION_CODE: "XVDXBUATGZ"
+      # AUTO_FETCH_WCCMMUD: "true"
+      # AUTO_ENABLE_WCCMMUD: "true"
     volumes:
       - ./config:/config
     restart: unless-stopped
