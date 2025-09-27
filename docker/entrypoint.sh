@@ -173,34 +173,43 @@ if [[ -n "${MUD_PLUS_ACTIVATION_CODE:-}" ]]; then
   fi
 fi
 
-# --- modules.json (ensure WCCMMUD entry if folder exists) --------------------
+# --- modules.json (ensure it exists & contains WCCMMUD if present) -----------
 ensure_modules_json() {
-  if [[ -n "${MODULES_JSON_INLINE:-}" ]]; then
-    printf "%s" "${MODULES_JSON_INLINE}" > "${MODULES_JSON}"
-  elif [[ ! -f "${MODULES_JSON}" ]]; then
-    printf '{ "Modules": [] }\n' > "${MODULES_JSON}"
+  local mj="${MODULES_JSON}"
+  local have_mmud=false
+  [[ -d "${MODULES_DIR}/WCCMMUD" ]] && have_mmud=true
+
+  # If file has a UTF-8 BOM or CRLF, normalize so jq doesn't choke
+  if [[ -f "$mj" ]]; then
+    # strip UTF-8 BOM
+    sed -i '1s/^\xEF\xBB\xBF//' "$mj" 2>/dev/null || true
+    # strip CRLF
+    sed -i 's/\r$//' "$mj" 2>/dev/null || true
   fi
 
-  if [[ -d "${MODULES_DIR}/WCCMMUD" ]]; then
-    if command -v jq >/dev/null 2>&1; then
-      local tmp; tmp="$(mktemp)"
-      jq '
-        .Modules |= ( . // [] ) |
-        (if any(.[]; .Identifier=="WCCMMUD")
-         then .
-         else . + [{ "Identifier":"WCCMMUD", "Path":"/config/modules/WCCMMUD" }]
-         end)
-      ' "${MODULES_JSON}" > "${tmp}" && mv "${tmp}" "${MODULES_JSON}"
+  # Create fresh if missing, zero bytes, or invalid JSON
+  if [[ ! -s "$mj" ]] || ! jq -e . "$mj" >/dev/null 2>&1; then
+    if $have_mmud; then
+      printf '{ "Modules": [ { "Identifier": "WCCMMUD", "Path": "/config/modules/WCCMMUD" } ] }\n' > "$mj"
+      log "Wrote modules.json (fresh) with WCCMMUD"
     else
-      grep -q 'WCCMMUD' "${MODULES_JSON}" || \
-        sed -i 's#\[\]#[{ "Identifier":"WCCMMUD", "Path":"/config/modules/WCCMMUD" }]#' "${MODULES_JSON}"
+      printf '{ "Modules": [] }\n' > "$mj"
+      log "Wrote modules.json (fresh) with empty Modules"
     fi
-    chown "${PUID}:${PGID}" "${MODULES_JSON}" 2>/dev/null || true
-    log "modules.json includes WCCMMUD"
   else
-    log "WCCMMUD folder not found; leaving modules.json as is"
+    # Valid JSON: if WCCMMUD dir exists but isn't listed, append it
+    if $have_mmud && ! jq -e '.Modules[]? | select((.Identifier//"")=="WCCMMUD")' "$mj" >/dev/null; then
+      local tmp; tmp="$(mktemp)"
+      jq '.Modules += [{"Identifier":"WCCMMUD","Path":"/config/modules/WCCMMUD"}]' "$mj" > "$tmp" \
+        && mv "$tmp" "$mj"
+      log "Added WCCMMUD to existing modules.json"
+    fi
   fi
+
+  chown "${PUID}:${PGID}" "$mj" 2>/dev/null || true
 }
+
+# call it (after any module download/perm steps)
 ensure_modules_json
 
 # --- normalize perms on top-level config files --------------------------------
